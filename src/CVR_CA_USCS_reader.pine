@@ -1,0 +1,284 @@
+//@version=5
+indicator("CVR-CA USCS reader", overlay=true, max_labels_count=200)
+
+//-----------------------------------------------------------------------------
+// helpers
+//-----------------------------------------------------------------------------
+
+safe_div(numerator, denominator, fallback) =>
+    not na(numerator) and not na(denominator) and denominator != 0.0 ? numerator / denominator : fallback
+
+clamp_value(value, min_value, max_value) =>
+    math.min(math.max(value, min_value), max_value)
+
+state_color_from_label(label_text) =>
+    label_text == "UP" ? color.new(color.lime, 0) :
+     label_text == "DOWN" ? color.new(color.red, 0) :
+     color.new(color.orange, 0)
+
+reversal_color_from_label(label_text) =>
+    label_text == "Stable" ? color.new(color.lime, 0) :
+     label_text == "Fatigue" ? color.new(color.yellow, 0) :
+     label_text == "Warning" ? color.new(color.orange, 0) :
+     color.new(color.red, 0)
+
+//-----------------------------------------------------------------------------
+// inputs
+//-----------------------------------------------------------------------------
+
+group_inputs = "inputs"
+struct_N = input.float(3.0, "struct_N", minval=0.1, step=0.1, group=group_inputs)
+alpha_u = input.float(0.45, "alpha_u", minval=0.01, step=0.01, group=group_inputs)
+alpha_d = input.float(0.30, "alpha_d", minval=0.01, step=0.01, group=group_inputs)
+fee_rate = input.float(0.0010, "fee_rate", minval=0.0, step=0.0001, group=group_inputs)
+slippage_rate = input.float(0.0005, "slippage_rate", minval=0.0, step=0.0001, group=group_inputs)
+spread_proxy_bps = input.float(6.0, "spread_proxy_bps", minval=0.0, step=0.1, group=group_inputs)
+use_custom_sigma = input.bool(true, "use_custom_sigma", group=group_inputs)
+sigma_alpha = input.float(0.20, "sigma_alpha", minval=0.01, maxval=1.0, step=0.01, group=group_inputs)
+sigma_w_ewtr = input.float(0.60, "sigma_w_ewtr", minval=0.0, maxval=1.0, step=0.05, group=group_inputs)
+sigma_w_realized = input.float(0.40, "sigma_w_realized", minval=0.0, maxval=1.0, step=0.05, group=group_inputs)
+use_dynamic_l = input.bool(true, "use_dynamic_l", group=group_inputs)
+regime_gain_up = input.float(1.15, "regime_gain_up", minval=0.1, step=0.05, group=group_inputs)
+regime_gain_neutral = input.float(1.00, "regime_gain_neutral", minval=0.1, step=0.05, group=group_inputs)
+regime_gain_down = input.float(0.85, "regime_gain_down", minval=0.1, step=0.05, group=group_inputs)
+rs_gain_k = input.float(0.20, "rs_gain_k", minval=0.0, step=0.01, group=group_inputs)
+rs_gain_scale = input.float(0.75, "rs_gain_scale", minval=0.01, step=0.05, group=group_inputs)
+dynamic_l_pair_mult = input.float(1.00, "dynamic_l_pair_mult", minval=0.1, step=0.05, group=group_inputs)
+use_uscs_layer = input.bool(true, "use_uscs_layer", group=group_inputs)
+uscs_theta_gain_k = input.float(0.15, "uscs_theta_gain_k", minval=0.0, step=0.01, group=group_inputs)
+uscs_theta_scale = input.float(0.01, "uscs_theta_scale", minval=0.0001, step=0.0001, group=group_inputs)
+uscs_heat_gain_k = input.float(0.15, "uscs_heat_gain_k", minval=0.0, step=0.01, group=group_inputs)
+uscs_heat_ref = input.float(1.00, "uscs_heat_ref", minval=0.01, step=0.05, group=group_inputs)
+uscs_g_min = input.float(0.80, "uscs_g_min", minval=0.1, step=0.05, group=group_inputs)
+uscs_g_max = input.float(1.20, "uscs_g_max", minval=0.1, step=0.05, group=group_inputs)
+q_soft = input.float(0.20, "q_soft", minval=0.0, step=0.01, group=group_inputs)
+q_hard = input.float(0.35, "q_hard", minval=0.0, step=0.01, group=group_inputs)
+trend_lookback = input.int(21, "trend lookback", minval=5, group=group_inputs)
+reversal_lookback = input.int(12, "reversal lookback", minval=2, group=group_inputs)
+show_table = input.bool(true, "show_table", group=group_inputs)
+show_bg = input.bool(true, "show_bg", group=group_inputs)
+show_labels = input.bool(true, "show_labels", group=group_inputs)
+
+sigma_length = trend_lookback
+short_length = int(math.max(2.0, math.round(trend_lookback / 3.0)))
+
+//-----------------------------------------------------------------------------
+// sigma engine
+//-----------------------------------------------------------------------------
+
+TR = ta.tr(true)
+ATR_raw = ta.atr(sigma_length)
+ewtr_alpha = 2.0 / (sigma_alpha * sigma_length + 1.0)
+var float EWTR = na
+EWTR := na(EWTR[1]) ? TR : EWTR[1] + ewtr_alpha * (TR - EWTR[1])
+log_return = math.log(safe_div(close, close[1], 1.0))
+realized_vol_scaled = ta.stdev(log_return, sigma_length) * close
+sigma_eff = sigma_w_ewtr * EWTR + sigma_w_realized * realized_vol_scaled
+atr_safe = math.max(nz(ATR_raw, syminfo.mintick), syminfo.mintick)
+sigma_floor = math.max(syminfo.mintick, atr_safe * 0.0001)
+sigma_used = math.max(use_custom_sigma ? sigma_eff : ATR_raw, sigma_floor)
+sigma_baseline = math.max(ta.ema(sigma_used, sigma_length), sigma_floor)
+SigmaRatio = safe_div(sigma_used, sigma_baseline, 1.0)
+SigmaSlope = sigma_used - nz(sigma_used[1], sigma_used)
+sigma_expanding = SigmaRatio > 1.0 and SigmaSlope > 0.0
+sigma_compressing = SigmaRatio < 1.0 and SigmaSlope < 0.0
+
+//-----------------------------------------------------------------------------
+// cost proxy
+//-----------------------------------------------------------------------------
+
+fee_roundtrip = close * fee_rate * 2.0
+spread_proxy = close * spread_proxy_bps / 10000.0
+slippage_proxy = close * slippage_rate * 2.0
+Cost_proxy = fee_roundtrip + spread_proxy + slippage_proxy
+
+//-----------------------------------------------------------------------------
+// CVR core
+//-----------------------------------------------------------------------------
+
+L_base = safe_div(alpha_u, alpha_d, 1.0) / struct_N
+CVR_ratio = safe_div(Cost_proxy, sigma_used, 0.0)
+m = L_base - CVR_ratio
+E = L_base * sigma_used - Cost_proxy
+Q_ratio = safe_div(spread_proxy, math.max(atr_safe, sigma_floor), 0.0)
+Q_state = Q_ratio > q_hard ? "HARD" : Q_ratio > q_soft ? "SOFT" : "OK"
+
+//-----------------------------------------------------------------------------
+// dynamic gains
+//-----------------------------------------------------------------------------
+
+ema_4h = request.security(syminfo.tickerid, "240", ta.ema(close, trend_lookback))
+ema_4h_prev = request.security(syminfo.tickerid, "240", ta.ema(close, trend_lookback)[1])
+ema_1d = request.security(syminfo.tickerid, "D", ta.ema(close, trend_lookback))
+ema_1d_prev = request.security(syminfo.tickerid, "D", ta.ema(close, trend_lookback)[1])
+ema_slope_4h = ema_4h - ema_4h_prev
+ema_slope_1d = ema_1d - ema_1d_prev
+theta_4h = safe_div(ema_slope_4h, math.max(math.abs(ema_4h_prev), syminfo.mintick), 0.0)
+theta_1d = safe_div(ema_slope_1d, math.max(math.abs(ema_1d_prev), syminfo.mintick), 0.0)
+rsi_value = ta.rsi(close, trend_lookback)
+rsi_score = clamp_value((rsi_value - 50.0) / 50.0, -1.0, 1.0)
+theta_score = clamp_value(safe_div(theta_4h + theta_1d, 2.0 * uscs_theta_scale, 0.0), -1.0, 1.0)
+RS_score = clamp_value(rsi_score * 0.65 + theta_score * 0.35, -1.0, 1.0)
+trend_component_4h = clamp_value(safe_div(ema_slope_4h, sigma_used, 0.0), -2.0, 2.0)
+trend_component_1d = clamp_value(safe_div(ema_slope_1d, sigma_used, 0.0), -2.0, 2.0)
+TrendScore = clamp_value(trend_component_4h * 0.45 + trend_component_1d * 0.35 + RS_score * 0.20, -2.0, 2.0)
+TrendLabel = TrendScore > 0.25 ? "UP" : TrendScore < -0.25 ? "DOWN" : "NEUTRAL"
+G_regime = TrendLabel == "UP" ? regime_gain_up : TrendLabel == "DOWN" ? regime_gain_down : regime_gain_neutral
+G_rs = clamp_value(1.0 + rs_gain_k * RS_score * rs_gain_scale, 0.5, 1.5)
+G_pair = dynamic_l_pair_mult
+L_pre_uscs = L_base * (use_dynamic_l ? G_regime * G_rs * G_pair : 1.0)
+CostKillRisk_pre = safe_div(CVR_ratio, math.max(L_pre_uscs, syminfo.mintick), 0.0)
+uscs_heat = math.max(0.0, SigmaRatio - 1.0) + math.max(0.0, Q_ratio - q_soft) + math.max(0.0, CostKillRisk_pre - 1.0)
+theta_state = clamp_value(safe_div(theta_4h + theta_1d, 2.0 * uscs_theta_scale, 0.0), -1.0, 1.0)
+G_theta = clamp_value(1.0 + uscs_theta_gain_k * theta_state, uscs_g_min, uscs_g_max)
+heat_over = math.max(0.0, safe_div(uscs_heat - uscs_heat_ref, uscs_heat_ref, 0.0))
+G_heat = clamp_value(1.0 - uscs_heat_gain_k * heat_over, uscs_g_min, uscs_g_max)
+G_uscs = use_uscs_layer ? clamp_value(G_theta * G_heat, uscs_g_min, uscs_g_max) : 1.0
+L_eff = L_base * (use_dynamic_l ? G_regime * G_rs * G_pair : 1.0) * G_uscs
+m_eff = L_eff - CVR_ratio
+E_eff = L_eff * sigma_used - Cost_proxy
+
+//-----------------------------------------------------------------------------
+// trend direction
+//-----------------------------------------------------------------------------
+
+prevTrendLabel = bar_index > 0 ? TrendLabel[1] : TrendLabel
+trend_changed = TrendLabel != prevTrendLabel
+trend_up = TrendLabel == "UP"
+trend_down = TrendLabel == "DOWN"
+
+//-----------------------------------------------------------------------------
+// reversal precursor
+//-----------------------------------------------------------------------------
+
+ema_short = ta.ema(close, short_length)
+short_slope = ema_short - nz(ema_short[1], ema_short)
+MarginDrift = m_eff - nz(m_eff[reversal_lookback], m_eff)
+m_eff_worsening = clamp_value(safe_div(-MarginDrift, math.max(math.abs(L_eff), syminfo.mintick), 0.0), 0.0, 1.0)
+rs_drift = RS_score - nz(RS_score[reversal_lookback], RS_score)
+rs_worsening = clamp_value(-rs_drift, 0.0, 1.0)
+q_worsening = clamp_value(safe_div(Q_ratio - q_soft, math.max(q_hard - q_soft, syminfo.mintick), 0.0), 0.0, 1.0)
+short_slope_slowing = clamp_value(safe_div(nz(short_slope[reversal_lookback], short_slope) - short_slope, sigma_used, 0.0), 0.0, 1.0)
+heat_worsening = clamp_value(safe_div(uscs_heat - uscs_heat_ref, math.max(uscs_heat_ref, 0.01), 0.0), 0.0, 1.0)
+ReversalScore = clamp_value(m_eff_worsening * 0.30 + rs_worsening * 0.20 + q_worsening * 0.20 + short_slope_slowing * 0.15 + heat_worsening * 0.15, 0.0, 1.20)
+ReversalLabel = ReversalScore >= 0.85 ? "FlipCandidate" : ReversalScore >= 0.60 ? "Warning" : ReversalScore >= 0.35 ? "Fatigue" : "Stable"
+
+//-----------------------------------------------------------------------------
+// plots
+//-----------------------------------------------------------------------------
+
+CostKillRisk = safe_div(CVR_ratio, math.max(L_eff, syminfo.mintick), 0.0)
+cost_pressure_high = CostKillRisk > 1.0 or Q_ratio > q_hard
+margin_thin = m_eff > 0.0 and m_eff <= L_eff * 0.15
+margin_collapsing = m_eff <= 0.0 or MarginDrift < -0.15
+
+state_bg = m_eff > 0.0 and Q_ratio < q_soft ? color.new(color.teal, 86) :
+ m_eff > 0.0 and Q_ratio >= q_soft ? color.new(color.orange, 87) :
+ color.new(color.red, 86)
+state_bar = m_eff > 0.0 and Q_ratio < q_soft ? color.new(color.teal, 0) :
+ m_eff > 0.0 and Q_ratio >= q_soft ? color.new(color.orange, 0) :
+ color.new(color.red, 0)
+
+bgcolor(show_bg ? state_bg : na, title="State Background")
+barcolor(show_bg ? state_bar : na, title="State Bars")
+
+visual_lookback = math.max(trend_lookback * 3, 50)
+visual_anchor = ta.lowest(low, visual_lookback) - atr_safe * 1.10
+visual_step = math.max(atr_safe * 0.22, syminfo.mintick * 20.0)
+
+m_lane = visual_anchor + visual_step * 4.5
+sigma_lane = visual_anchor + visual_step * 3.3
+cost_lane = visual_anchor + visual_step * 2.1
+trend_lane = visual_anchor + visual_step * 0.9
+reversal_lane = visual_anchor - visual_step * 0.3
+
+plot(m_lane, "m_eff baseline", color=color.new(color.silver, 75), linewidth=1, style=plot.style_linebr)
+plot(sigma_lane, "SigmaRatio baseline", color=color.new(color.silver, 75), linewidth=1, style=plot.style_linebr)
+plot(cost_lane, "CostKillRisk baseline", color=color.new(color.silver, 75), linewidth=1, style=plot.style_linebr)
+plot(trend_lane, "TrendScore baseline", color=color.new(color.silver, 75), linewidth=1, style=plot.style_linebr)
+plot(reversal_lane, "ReversalScore baseline", color=color.new(color.silver, 75), linewidth=1, style=plot.style_linebr)
+
+plot(m_lane + m_eff * visual_step, "m_eff", color=m_eff >= 0.0 ? color.new(color.lime, 0) : color.new(color.red, 0), linewidth=2)
+plot(sigma_lane + (SigmaRatio - 1.0) * visual_step, "SigmaRatio", color=sigma_expanding ? color.new(color.fuchsia, 0) : sigma_compressing ? color.new(color.aqua, 0) : color.new(color.blue, 0), linewidth=2)
+plot(cost_lane + (CostKillRisk - 1.0) * visual_step, "CostKillRisk", color=cost_pressure_high ? color.new(color.red, 0) : color.new(color.orange, 0), linewidth=2)
+plot(trend_lane + TrendScore * visual_step, "TrendScore", color=state_color_from_label(TrendLabel), linewidth=2)
+plot(reversal_lane + ReversalScore * visual_step, "ReversalScore", color=reversal_color_from_label(ReversalLabel), linewidth=2)
+
+plot(m_lane, "m_eff zero guide", color=color.new(color.white, 90), linewidth=1, style=plot.style_circles)
+plot(sigma_lane, "SigmaRatio one guide", color=color.new(color.white, 90), linewidth=1, style=plot.style_circles)
+plot(cost_lane, "CostKillRisk one guide", color=color.new(color.white, 90), linewidth=1, style=plot.style_circles)
+
+plotshape(show_labels and trend_changed and trend_up, title="Trend UP", style=shape.arrowup, location=location.belowbar, color=color.new(color.lime, 0), size=size.tiny, text="UP")
+plotshape(show_labels and trend_changed and trend_down, title="Trend DOWN", style=shape.arrowdown, location=location.abovebar, color=color.new(color.red, 0), size=size.tiny, text="DOWN")
+plotshape(show_labels and ReversalLabel == "Warning", title="Reversal Warning", style=shape.triangleup, location=location.abovebar, color=color.new(color.orange, 0), size=size.tiny, text="WARN")
+plotshape(show_labels and ReversalLabel == "FlipCandidate", title="Reversal FlipCandidate", style=shape.diamond, location=location.abovebar, color=color.new(color.red, 0), size=size.tiny, text="FLIP")
+
+//-----------------------------------------------------------------------------
+// table
+//-----------------------------------------------------------------------------
+
+var table summary_table = table.new(position.top_right, 2, 18, border_width=1)
+
+if barstate.islast
+    if show_table
+        table.clear(summary_table, 0, 0, 1, 17)
+        table.cell(summary_table, 0, 0, "Metric", text_color=color.white, bgcolor=color.new(color.black, 0))
+        table.cell(summary_table, 1, 0, "Value", text_color=color.white, bgcolor=color.new(color.black, 0))
+        table.cell(summary_table, 0, 1, "sigma_used")
+        table.cell(summary_table, 1, 1, str.tostring(sigma_used, format.mintick))
+        table.cell(summary_table, 0, 2, "ATR_raw")
+        table.cell(summary_table, 1, 2, str.tostring(ATR_raw, format.mintick))
+        table.cell(summary_table, 0, 3, "sigma_eff")
+        table.cell(summary_table, 1, 3, str.tostring(sigma_eff, format.mintick))
+        table.cell(summary_table, 0, 4, "SigmaRatio")
+        table.cell(summary_table, 1, 4, str.tostring(SigmaRatio, "#.###"), text_color=sigma_expanding ? color.red : sigma_compressing ? color.aqua : color.white)
+        table.cell(summary_table, 0, 5, "SigmaSlope")
+        table.cell(summary_table, 1, 5, str.tostring(SigmaSlope, format.mintick))
+        table.cell(summary_table, 0, 6, "Cost_proxy")
+        table.cell(summary_table, 1, 6, str.tostring(Cost_proxy, format.mintick))
+        table.cell(summary_table, 0, 7, "CVR_ratio")
+        table.cell(summary_table, 1, 7, str.tostring(CVR_ratio, "#.###"))
+        table.cell(summary_table, 0, 8, "L_base")
+        table.cell(summary_table, 1, 8, str.tostring(L_base, "#.###"))
+        table.cell(summary_table, 0, 9, "L_eff")
+        table.cell(summary_table, 1, 9, str.tostring(L_eff, "#.###"))
+        table.cell(summary_table, 0, 10, "m")
+        table.cell(summary_table, 1, 10, str.tostring(m, "#.###"), text_color=m >= 0.0 ? color.lime : color.red)
+        table.cell(summary_table, 0, 11, "m_eff")
+        table.cell(summary_table, 1, 11, str.tostring(m_eff, "#.###"), text_color=m_eff >= 0.0 ? color.lime : color.red)
+        table.cell(summary_table, 0, 12, "MarginDrift")
+        table.cell(summary_table, 1, 12, str.tostring(MarginDrift, "#.###"), text_color=margin_collapsing ? color.red : margin_thin ? color.orange : color.white)
+        table.cell(summary_table, 0, 13, "CostKillRisk")
+        table.cell(summary_table, 1, 13, str.tostring(CostKillRisk, "#.###"), text_color=cost_pressure_high ? color.red : color.white)
+        table.cell(summary_table, 0, 14, "TrendLabel")
+        table.cell(summary_table, 1, 14, TrendLabel, text_color=state_color_from_label(TrendLabel))
+        table.cell(summary_table, 0, 15, "ReversalLabel")
+        table.cell(summary_table, 1, 15, ReversalLabel, text_color=reversal_color_from_label(ReversalLabel))
+        table.cell(summary_table, 0, 16, "RS_score")
+        table.cell(summary_table, 1, 16, str.tostring(RS_score, "#.###"))
+        table.cell(summary_table, 0, 17, "Q_ratio")
+        table.cell(summary_table, 1, 17, str.tostring(Q_ratio, "#.###") + " (" + Q_state + ")", text_color=Q_ratio > q_hard ? color.red : Q_ratio > q_soft ? color.orange : color.white)
+    else
+        table.clear(summary_table, 0, 0, 1, 17)
+
+//-----------------------------------------------------------------------------
+// alerts
+//-----------------------------------------------------------------------------
+
+prevReversalLabel = bar_index > 0 ? ReversalLabel[1] : "Stable"
+reversal_warning_enter = ReversalLabel == "Warning" and prevReversalLabel != "Warning"
+reversal_flip_enter = ReversalLabel == "FlipCandidate" and prevReversalLabel != "FlipCandidate"
+trend_up_warning = TrendLabel == "UP" and ReversalLabel == "Warning"
+trend_down_warning = TrendLabel == "DOWN" and ReversalLabel == "Warning"
+
+alertcondition(trend_changed, "TrendLabel changes", "TrendLabel changed")
+alertcondition(reversal_warning_enter, "ReversalLabel enters Warning", "ReversalLabel entered Warning")
+alertcondition(reversal_flip_enter, "ReversalLabel enters FlipCandidate", "ReversalLabel entered FlipCandidate")
+alertcondition(ta.crossunder(m_eff, 0.0), "m_eff crosses below 0", "m_eff crossed below 0")
+alertcondition(ta.crossover(m_eff, 0.0), "m_eff crosses above 0", "m_eff crossed above 0")
+alertcondition(ta.crossunder(SigmaRatio, 1.0), "SigmaRatio crosses below 1", "SigmaRatio crossed below 1")
+alertcondition(CostKillRisk > 1.0, "CostKillRisk > 1", "CostKillRisk is above 1")
+alertcondition(Q_ratio > q_soft, "Q_ratio > q_soft", "Q_ratio is above q_soft")
+alertcondition(Q_ratio > q_hard, "Q_ratio > q_hard", "Q_ratio is above q_hard")
+alertcondition(trend_up_warning, "Trend=UP and Reversal=Warning", "Trend is UP while Reversal is Warning")
+alertcondition(trend_down_warning, "Trend=DOWN and Reversal=Warning", "Trend is DOWN while Reversal is Warning")
