@@ -8,7 +8,7 @@ TradingView Pine Script v5 indicator project for reading CVR-CA × USCS market s
 - trend direction / reversal precursor
 - sigma state / cost pressure / margin reserve
 - short / mid / long MA overlay on price
-- dedicated custom sigma pane
+- custom sigma embedded into the radar overlay
 - dedicated MACD pane
 - TradingView Pine v5 implementation
 
@@ -29,7 +29,7 @@ TradingView Pine Script v5 indicator project for reading CVR-CA × USCS market s
 - `ReversalScore` and `ReversalLabel` to surface fatigue, warning, and flip precursor states
 - `Q_ratio` to monitor spread pressure against raw ATR
 - short / mid / long MAs to read stack alignment at a glance
-- custom sigma pane to read `sigma_used`, `ATR_raw`, `sigma_eff`, and friction pressure in one place
+- embedded sigma radar to read `sigma_used`, `ATR_raw`, `sigma_eff`, and friction pressure in one place
 - MACD pane to read crossover timing and histogram momentum in a dedicated window
 
 ## Reader, Not Bot Replica
@@ -41,14 +41,13 @@ This project is intentionally a reader and observer. It does not attempt to repr
 - Pine cannot access live order book spread, execution fees, or realized routing costs directly
 - `Cost_proxy` is therefore a proxy built from configured fee, slippage, and spread inputs
 - Multi-timeframe trend and theta signals are approximated with higher-timeframe EMA and momentum sampling
-- A single Pine script can render on the main chart or in its own pane, so separate sigma and MACD windows are provided as companion scripts
+- A single Pine script can render on the main chart or in its own pane, so the custom sigma radar is folded into the main overlay while MACD remains a companion pane
 
 ## Suggested Layout
 
-- Add `CVR_CA_USCS_reader.pine` to the main chart for the price overlay and reader summary
-- Add `CVR_CA_USCS_sigma_panel.pine` as the first lower pane for custom sigma monitoring
-- Add `CVR_CA_USCS_macd_panel.pine` as the second lower pane for momentum timing
-- In TradingView, drag the panes so sigma sits above MACD for a clean vertical stack
+- Add `CVR_CA_USCS_reader.pine` to the main chart for the price overlay, sigma radar, and reader summary
+- Add `CVR_CA_USCS_macd_panel.pine` as the lower pane for momentum timing
+- This keeps the layout within a two-indicator setup for TradingView free plans
 
 ## Intended Use
 

@@ -22,6 +22,21 @@ reversal_color_from_label(label_text) =>
      label_text == "Warning" ? color.new(color.orange, 0) :
      color.new(color.red, 0)
 
+pressure_color_from_state(label_text) =>
+    label_text == "CALM" ? color.new(color.lime, 0) :
+     label_text == "ELEVATED" ? color.new(color.orange, 0) :
+     color.new(color.red, 0)
+
+margin_color_from_state(label_text) =>
+    label_text == "SAFE" ? color.new(color.lime, 0) :
+     label_text == "THIN" ? color.new(color.orange, 0) :
+     color.new(color.red, 0)
+
+radar_color_from_state(label_text) =>
+    label_text == "READY" ? color.new(color.lime, 0) :
+     label_text == "MONITOR" ? color.new(color.orange, 0) :
+     color.new(color.red, 0)
+
 //-----------------------------------------------------------------------------
 // inputs
 //-----------------------------------------------------------------------------
@@ -87,6 +102,9 @@ SigmaRatio = safe_div(sigma_used, sigma_baseline, 1.0)
 SigmaSlope = sigma_used - nz(sigma_used[1], sigma_used)
 sigma_expanding = SigmaRatio > 1.0 and SigmaSlope > 0.0
 sigma_compressing = SigmaRatio < 1.0 and SigmaSlope < 0.0
+SigmaEffRatio = safe_div(sigma_eff, sigma_baseline, 1.0)
+ATRRatio = safe_div(atr_safe, sigma_baseline, 1.0)
+SigmaState = sigma_expanding ? "EXPANDING" : sigma_compressing ? "COMPRESSING" : "BALANCED"
 
 //-----------------------------------------------------------------------------
 // cost proxy
@@ -198,6 +216,15 @@ macd_bull = macd_line > macd_signal and macd_hist >= 0.0
 macd_bear = macd_line < macd_signal and macd_hist <= 0.0
 alignment_bull = trend_up and ma_bull and macd_bull
 alignment_bear = trend_down and ma_bear and macd_bear
+PressureState = cost_pressure_high ? "HIGH" : Q_ratio > q_soft or CostKillRisk > 0.85 ? "ELEVATED" : "CALM"
+MarginState = m_eff <= 0.0 ? "NEGATIVE" : margin_thin ? "THIN" : "SAFE"
+RadarState = m_eff <= 0.0 ? "DEFENSIVE" : ReversalLabel == "FlipCandidate" or cost_pressure_high ? "DEFENSIVE" : alignment_bull and ReversalLabel == "Stable" ? "READY" : "MONITOR"
+pressure_norm = clamp_value(CostKillRisk - 1.0, -0.75, 1.50)
+q_pressure_norm = clamp_value(safe_div(Q_ratio - q_soft, math.max(q_hard - q_soft, 0.0001), 0.0), -0.75, 1.50)
+heat_pressure_norm = clamp_value(safe_div(uscs_heat - uscs_heat_ref, math.max(uscs_heat_ref, 0.01), 0.0), -0.75, 1.50)
+sigma_used_norm = clamp_value(SigmaRatio - 1.0, -1.50, 1.50)
+sigma_eff_norm = clamp_value(SigmaEffRatio - 1.0, -1.50, 1.50)
+atr_norm = clamp_value(ATRRatio - 1.0, -1.50, 1.50)
 
 state_bg = m_eff > 0.0 and Q_ratio < q_soft and alignment_bull ? color.new(color.lime, 86) :
  m_eff > 0.0 and Q_ratio < q_soft ? color.new(color.teal, 86) :
@@ -217,30 +244,40 @@ plot(show_ma_bundle ? ma_long : na, "MA long", color=color.new(color.fuchsia, 0)
 fill(ma_short_plot, ma_mid_plot, color=ma_short >= ma_mid ? color.new(color.lime, 88) : color.new(color.red, 88), title="MA momentum cloud")
 
 visual_lookback = math.max(trend_lookback * 3, 50)
-visual_anchor = ta.lowest(low, visual_lookback) - atr_safe * 1.10
-visual_step = math.max(atr_safe * 0.22, syminfo.mintick * 20.0)
+visual_anchor = ta.lowest(low, visual_lookback) - atr_safe * 1.65
+visual_step = math.max(atr_safe * 0.26, syminfo.mintick * 30.0)
 
-m_lane = visual_anchor + visual_step * 4.5
-sigma_lane = visual_anchor + visual_step * 3.3
-cost_lane = visual_anchor + visual_step * 2.1
-trend_lane = visual_anchor + visual_step * 0.9
-reversal_lane = visual_anchor - visual_step * 0.3
+m_lane = visual_anchor + visual_step * 6.0
+sigma_lane = visual_anchor + visual_step * 4.7
+pressure_lane = visual_anchor + visual_step * 3.4
+trend_lane = visual_anchor + visual_step * 2.1
+reversal_lane = visual_anchor + visual_step * 0.8
 
 plot(m_lane, "m_eff baseline", color=color.new(color.silver, 75), linewidth=1, style=plot.style_linebr)
 plot(sigma_lane, "SigmaRatio baseline", color=color.new(color.silver, 75), linewidth=1, style=plot.style_linebr)
-plot(cost_lane, "CostKillRisk baseline", color=color.new(color.silver, 75), linewidth=1, style=plot.style_linebr)
+plot(pressure_lane, "Pressure baseline", color=color.new(color.silver, 75), linewidth=1, style=plot.style_linebr)
 plot(trend_lane, "TrendScore baseline", color=color.new(color.silver, 75), linewidth=1, style=plot.style_linebr)
 plot(reversal_lane, "ReversalScore baseline", color=color.new(color.silver, 75), linewidth=1, style=plot.style_linebr)
+plot(pressure_lane + visual_step, "Pressure hard guide", color=color.new(color.red, 85), linewidth=1, style=plot.style_linebr)
+plot(reversal_lane + visual_step * 0.60, "Reversal warning guide", color=color.new(color.orange, 85), linewidth=1, style=plot.style_linebr)
 
-plot(m_lane + m_eff * visual_step, "m_eff", color=m_eff >= 0.0 ? color.new(color.lime, 0) : color.new(color.red, 0), linewidth=2)
-plot(sigma_lane + (SigmaRatio - 1.0) * visual_step, "SigmaRatio", color=sigma_expanding ? color.new(color.fuchsia, 0) : sigma_compressing ? color.new(color.aqua, 0) : color.new(color.blue, 0), linewidth=2)
-plot(cost_lane + (CostKillRisk - 1.0) * visual_step, "CostKillRisk", color=cost_pressure_high ? color.new(color.red, 0) : color.new(color.orange, 0), linewidth=2)
-plot(trend_lane + TrendScore * visual_step, "TrendScore", color=state_color_from_label(TrendLabel), linewidth=2)
-plot(reversal_lane + ReversalScore * visual_step, "ReversalScore", color=reversal_color_from_label(ReversalLabel), linewidth=2)
+plot(m_lane + clamp_value(m, -2.0, 2.5) * visual_step, "m static", color=color.new(color.silver, 20), linewidth=1)
+plot(m_lane + clamp_value(m_eff, -2.0, 2.5) * visual_step, "m_eff", color=m_eff >= 0.0 ? color.new(color.lime, 0) : color.new(color.red, 0), linewidth=3)
+plot(sigma_lane + atr_norm * visual_step, "ATR ratio", color=color.new(color.white, 25), linewidth=1)
+plot(sigma_lane + sigma_eff_norm * visual_step, "sigma_eff ratio", color=color.new(color.fuchsia, 15), linewidth=2)
+plot(sigma_lane + sigma_used_norm * visual_step, "SigmaRatio", color=sigma_expanding ? color.new(color.orange, 0) : sigma_compressing ? color.new(color.aqua, 0) : color.new(color.blue, 0), linewidth=3)
+plot(pressure_lane + heat_pressure_norm * visual_step, "Heat pressure", color=color.new(color.yellow, 10), linewidth=1)
+plot(pressure_lane + q_pressure_norm * visual_step, "Q pressure", color=Q_ratio > q_hard ? color.new(color.red, 0) : Q_ratio > q_soft ? color.new(color.orange, 0) : color.new(color.aqua, 0), linewidth=2)
+plot(pressure_lane + pressure_norm * visual_step, "CostKillRisk", color=cost_pressure_high ? color.new(color.red, 0) : color.new(color.orange, 0), linewidth=3)
+plot(trend_lane + RS_score * visual_step, "RS_score", color=color.new(color.aqua, 25), linewidth=1)
+plot(trend_lane + TrendScore * visual_step, "TrendScore", color=state_color_from_label(TrendLabel), linewidth=3)
+plot(reversal_lane + heat_worsening * visual_step, "Heat worsening", color=color.new(color.yellow, 20), linewidth=1)
+plot(reversal_lane + ReversalScore * visual_step, "ReversalScore", color=reversal_color_from_label(ReversalLabel), linewidth=3)
 
 plot(m_lane, "m_eff zero guide", color=color.new(color.white, 90), linewidth=1, style=plot.style_circles)
 plot(sigma_lane, "SigmaRatio one guide", color=color.new(color.white, 90), linewidth=1, style=plot.style_circles)
-plot(cost_lane, "CostKillRisk one guide", color=color.new(color.white, 90), linewidth=1, style=plot.style_circles)
+plot(pressure_lane, "Pressure calm guide", color=color.new(color.white, 90), linewidth=1, style=plot.style_circles)
+plot(trend_lane, "Trend zero guide", color=color.new(color.white, 92), linewidth=1, style=plot.style_circles)
 
 plotshape(show_labels and trend_changed and trend_up, title="Trend UP", style=shape.arrowup, location=location.belowbar, color=color.new(color.lime, 0), size=size.tiny, text="UP")
 plotshape(show_labels and trend_changed and trend_down, title="Trend DOWN", style=shape.arrowdown, location=location.abovebar, color=color.new(color.red, 0), size=size.tiny, text="DOWN")
@@ -249,61 +286,82 @@ plotshape(show_labels and ReversalLabel == "FlipCandidate", title="Reversal Flip
 plotshape(show_labels and show_macd_signals and macd_cross_up, title="MACD bullish cross", style=shape.circle, location=location.belowbar, color=color.new(color.aqua, 0), size=size.tiny, text="MACD+")
 plotshape(show_labels and show_macd_signals and macd_cross_down, title="MACD bearish cross", style=shape.circle, location=location.abovebar, color=color.new(color.red, 0), size=size.tiny, text="MACD-")
 
+var label margin_status_label = na
+var label sigma_status_label = na
+var label pressure_status_label = na
+var label trend_status_label = na
+var label reversal_status_label = na
+
+if barstate.islast
+    label.delete(margin_status_label)
+    label.delete(sigma_status_label)
+    label.delete(pressure_status_label)
+    label.delete(trend_status_label)
+    label.delete(reversal_status_label)
+    if show_labels
+        margin_status_label := label.new(bar_index, m_lane, "MARGIN " + MarginState + " | " + str.tostring(m_eff, "#.##"), xloc=xloc.bar_index, yloc=yloc.price, style=label.style_label_left, textcolor=color.white, color=color.new(margin_color_from_state(MarginState), 72), size=size.tiny)
+        sigma_status_label := label.new(bar_index, sigma_lane, "SIGMA " + SigmaState + " | " + str.tostring(SigmaRatio, "#.##") + "x", xloc=xloc.bar_index, yloc=yloc.price, style=label.style_label_left, textcolor=color.white, color=color.new(sigma_expanding ? color.orange : sigma_compressing ? color.aqua : color.blue, 72), size=size.tiny)
+        pressure_status_label := label.new(bar_index, pressure_lane, "PRESS " + PressureState + " | Q " + Q_state, xloc=xloc.bar_index, yloc=yloc.price, style=label.style_label_left, textcolor=color.white, color=color.new(pressure_color_from_state(PressureState), 72), size=size.tiny)
+        trend_status_label := label.new(bar_index, trend_lane, "RADAR " + RadarState + " | " + TrendLabel, xloc=xloc.bar_index, yloc=yloc.price, style=label.style_label_left, textcolor=color.white, color=color.new(radar_color_from_state(RadarState), 72), size=size.tiny)
+        reversal_status_label := label.new(bar_index, reversal_lane, "REV " + ReversalLabel + " | " + MACDLabel, xloc=xloc.bar_index, yloc=yloc.price, style=label.style_label_left, textcolor=color.white, color=color.new(reversal_color_from_label(ReversalLabel), 72), size=size.tiny)
+
 //-----------------------------------------------------------------------------
 // table
 //-----------------------------------------------------------------------------
 
-var table summary_table = table.new(position.top_right, 2, 22, border_width=1)
+var table summary_table = table.new(position.top_right, 2, 23, border_width=1)
 
 if barstate.islast
     if show_table
-        table.clear(summary_table, 0, 0, 1, 21)
+        table.clear(summary_table, 0, 0, 1, 22)
         table.cell(summary_table, 0, 0, "Metric", text_color=color.white, bgcolor=color.new(color.black, 0))
         table.cell(summary_table, 1, 0, "Value", text_color=color.white, bgcolor=color.new(color.black, 0))
-        table.cell(summary_table, 0, 1, "sigma_used")
-        table.cell(summary_table, 1, 1, str.tostring(sigma_used, format.mintick))
-        table.cell(summary_table, 0, 2, "ATR_raw")
-        table.cell(summary_table, 1, 2, str.tostring(ATR_raw, format.mintick))
-        table.cell(summary_table, 0, 3, "sigma_eff")
-        table.cell(summary_table, 1, 3, str.tostring(sigma_eff, format.mintick))
-        table.cell(summary_table, 0, 4, "SigmaRatio")
-        table.cell(summary_table, 1, 4, str.tostring(SigmaRatio, "#.###"), text_color=sigma_expanding ? color.red : sigma_compressing ? color.aqua : color.white)
-        table.cell(summary_table, 0, 5, "SigmaSlope")
-        table.cell(summary_table, 1, 5, str.tostring(SigmaSlope, format.mintick))
-        table.cell(summary_table, 0, 6, "Cost_proxy")
-        table.cell(summary_table, 1, 6, str.tostring(Cost_proxy, format.mintick))
-        table.cell(summary_table, 0, 7, "CVR_ratio")
-        table.cell(summary_table, 1, 7, str.tostring(CVR_ratio, "#.###"))
-        table.cell(summary_table, 0, 8, "L_base")
-        table.cell(summary_table, 1, 8, str.tostring(L_base, "#.###"))
-        table.cell(summary_table, 0, 9, "L_eff")
-        table.cell(summary_table, 1, 9, str.tostring(L_eff, "#.###"))
-        table.cell(summary_table, 0, 10, "m")
-        table.cell(summary_table, 1, 10, str.tostring(m, "#.###"), text_color=m >= 0.0 ? color.lime : color.red)
-        table.cell(summary_table, 0, 11, "m_eff")
-        table.cell(summary_table, 1, 11, str.tostring(m_eff, "#.###"), text_color=m_eff >= 0.0 ? color.lime : color.red)
-        table.cell(summary_table, 0, 12, "MarginDrift")
-        table.cell(summary_table, 1, 12, str.tostring(MarginDrift, "#.###"), text_color=margin_collapsing ? color.red : margin_thin ? color.orange : color.white)
-        table.cell(summary_table, 0, 13, "CostKillRisk")
-        table.cell(summary_table, 1, 13, str.tostring(CostKillRisk, "#.###"), text_color=cost_pressure_high ? color.red : color.white)
-        table.cell(summary_table, 0, 14, "TrendLabel")
-        table.cell(summary_table, 1, 14, TrendLabel, text_color=state_color_from_label(TrendLabel))
-        table.cell(summary_table, 0, 15, "ReversalLabel")
-        table.cell(summary_table, 1, 15, ReversalLabel, text_color=reversal_color_from_label(ReversalLabel))
-        table.cell(summary_table, 0, 16, "RS_score")
-        table.cell(summary_table, 1, 16, str.tostring(RS_score, "#.###"))
-        table.cell(summary_table, 0, 17, "Q_ratio")
-        table.cell(summary_table, 1, 17, str.tostring(Q_ratio, "#.###") + " (" + Q_state + ")", text_color=Q_ratio > q_hard ? color.red : Q_ratio > q_soft ? color.orange : color.white)
-        table.cell(summary_table, 0, 18, "MA stack")
-        table.cell(summary_table, 1, 18, MAStackLabel, text_color=ma_bull ? color.lime : ma_bear ? color.red : color.orange)
-        table.cell(summary_table, 0, 19, "MA short/mid/long")
-        table.cell(summary_table, 1, 19, str.tostring(ma_short, format.mintick) + " / " + str.tostring(ma_mid, format.mintick) + " / " + str.tostring(ma_long, format.mintick))
-        table.cell(summary_table, 0, 20, "MACD")
-        table.cell(summary_table, 1, 20, MACDLabel, text_color=macd_bull ? color.lime : macd_bear ? color.red : color.orange)
-        table.cell(summary_table, 0, 21, "MACD hist")
-        table.cell(summary_table, 1, 21, str.tostring(macd_hist, format.mintick), text_color=macd_hist >= 0.0 ? color.lime : color.red)
+        table.cell(summary_table, 0, 1, "Radar")
+        table.cell(summary_table, 1, 1, RadarState, text_color=radar_color_from_state(RadarState))
+        table.cell(summary_table, 0, 2, "Sigma")
+        table.cell(summary_table, 1, 2, SigmaState, text_color=sigma_expanding ? color.orange : sigma_compressing ? color.aqua : color.white)
+        table.cell(summary_table, 0, 3, "Pressure")
+        table.cell(summary_table, 1, 3, PressureState, text_color=pressure_color_from_state(PressureState))
+        table.cell(summary_table, 0, 4, "Margin")
+        table.cell(summary_table, 1, 4, MarginState, text_color=margin_color_from_state(MarginState))
+        table.cell(summary_table, 0, 5, "Trend")
+        table.cell(summary_table, 1, 5, TrendLabel, text_color=state_color_from_label(TrendLabel))
+        table.cell(summary_table, 0, 6, "Reversal")
+        table.cell(summary_table, 1, 6, ReversalLabel, text_color=reversal_color_from_label(ReversalLabel))
+        table.cell(summary_table, 0, 7, "sigma_used")
+        table.cell(summary_table, 1, 7, str.tostring(sigma_used, format.mintick))
+        table.cell(summary_table, 0, 8, "ATR_raw")
+        table.cell(summary_table, 1, 8, str.tostring(ATR_raw, format.mintick))
+        table.cell(summary_table, 0, 9, "sigma_eff")
+        table.cell(summary_table, 1, 9, str.tostring(sigma_eff, format.mintick))
+        table.cell(summary_table, 0, 10, "SigmaRatio / Slope")
+        table.cell(summary_table, 1, 10, str.tostring(SigmaRatio, "#.###") + " / " + str.tostring(SigmaSlope, format.mintick), text_color=sigma_expanding ? color.orange : sigma_compressing ? color.aqua : color.white)
+        table.cell(summary_table, 0, 11, "Cost_proxy")
+        table.cell(summary_table, 1, 11, str.tostring(Cost_proxy, format.mintick))
+        table.cell(summary_table, 0, 12, "CVR_ratio")
+        table.cell(summary_table, 1, 12, str.tostring(CVR_ratio, "#.###"))
+        table.cell(summary_table, 0, 13, "L_base / L_eff")
+        table.cell(summary_table, 1, 13, str.tostring(L_base, "#.###") + " / " + str.tostring(L_eff, "#.###"))
+        table.cell(summary_table, 0, 14, "m / m_eff")
+        table.cell(summary_table, 1, 14, str.tostring(m, "#.###") + " / " + str.tostring(m_eff, "#.###"), text_color=m_eff >= 0.0 ? color.lime : color.red)
+        table.cell(summary_table, 0, 15, "MarginDrift")
+        table.cell(summary_table, 1, 15, str.tostring(MarginDrift, "#.###"), text_color=margin_collapsing ? color.red : margin_thin ? color.orange : color.white)
+        table.cell(summary_table, 0, 16, "CostKillRisk")
+        table.cell(summary_table, 1, 16, str.tostring(CostKillRisk, "#.###"), text_color=cost_pressure_high ? color.red : color.white)
+        table.cell(summary_table, 0, 17, "RS_score")
+        table.cell(summary_table, 1, 17, str.tostring(RS_score, "#.###"))
+        table.cell(summary_table, 0, 18, "Q_ratio")
+        table.cell(summary_table, 1, 18, str.tostring(Q_ratio, "#.###") + " (" + Q_state + ")", text_color=Q_ratio > q_hard ? color.red : Q_ratio > q_soft ? color.orange : color.white)
+        table.cell(summary_table, 0, 19, "MA stack")
+        table.cell(summary_table, 1, 19, MAStackLabel, text_color=ma_bull ? color.lime : ma_bear ? color.red : color.orange)
+        table.cell(summary_table, 0, 20, "MA short/mid/long")
+        table.cell(summary_table, 1, 20, str.tostring(ma_short, format.mintick) + " / " + str.tostring(ma_mid, format.mintick) + " / " + str.tostring(ma_long, format.mintick))
+        table.cell(summary_table, 0, 21, "MACD")
+        table.cell(summary_table, 1, 21, MACDLabel, text_color=macd_bull ? color.lime : macd_bear ? color.red : color.orange)
+        table.cell(summary_table, 0, 22, "MACD hist")
+        table.cell(summary_table, 1, 22, str.tostring(macd_hist, format.mintick), text_color=macd_hist >= 0.0 ? color.lime : color.red)
     else
-        table.clear(summary_table, 0, 0, 1, 21)
+        table.clear(summary_table, 0, 0, 1, 22)
 
 //-----------------------------------------------------------------------------
 // alerts
