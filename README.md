@@ -7,6 +7,8 @@ TradingView Pine Script v5 indicator project for reading CVR-CA × USCS market s
 - CVR_ratio / L_base / L_eff / m / m_eff visualization
 - trend direction / reversal precursor
 - sigma state / cost pressure / margin reserve
+- short / mid / long MA overlay with ATR21 envelope
+- MACD state and crossover context
 - TradingView Pine v5 implementation
 
 ## Development policy
@@ -25,6 +27,9 @@ TradingView Pine Script v5 indicator project for reading CVR-CA × USCS market s
 - `TrendScore` and `TrendLabel` to summarize directional pressure
 - `ReversalScore` and `ReversalLabel` to surface fatigue, warning, and flip precursor states
 - `Q_ratio` to monitor spread pressure against raw ATR
+- short / mid / long MAs to read stack alignment at a glance
+- `ATR21` and its envelope to gauge volatility expansion around the mid trend
+- `MACD` state and crossover markers for intuitive momentum confirmation
 
 ## Reader, Not Bot Replica
 
