@@ -62,8 +62,7 @@ show_ma_bundle = input.bool(true, "show_ma_bundle", group=group_inputs)
 ma_short_length = input.int(20, "ma short length", minval=2, group=group_inputs)
 ma_mid_length = input.int(50, "ma mid length", minval=3, group=group_inputs)
 ma_long_length = input.int(200, "ma long length", minval=5, group=group_inputs)
-show_atr21_band = input.bool(true, "show_atr21_band", group=group_inputs)
-show_macd_signals = input.bool(true, "show_macd_signals", group=group_inputs)
+show_macd_signals = input.bool(false, "show_macd_signals", group=group_inputs)
 
 sigma_length = trend_lookback
 short_length = int(math.max(2.0, math.round(trend_lookback / 3.0)))
@@ -119,12 +118,6 @@ ma_long = ta.ema(close, ma_long_length)
 ma_stack_score = (ma_short > ma_mid ? 1.0 : ma_short < ma_mid ? -1.0 : 0.0) + (ma_mid > ma_long ? 1.0 : ma_mid < ma_long ? -1.0 : 0.0)
 ma_stack_norm = ma_stack_score / 2.0
 MAStackLabel = ma_stack_score >= 2.0 ? "Bullish" : ma_stack_score <= -2.0 ? "Bearish" : "Mixed"
-ATR21 = ta.atr(21)
-atr21_safe = math.max(nz(ATR21, syminfo.mintick), syminfo.mintick)
-ATR21_pct = safe_div(atr21_safe, close, 0.0) * 100.0
-ATR21_ratio = safe_div(atr21_safe, math.max(ta.ema(ATR21, 21), syminfo.mintick), 1.0)
-atr21_upper = ma_mid + ATR21
-atr21_lower = ma_mid - ATR21
 [macd_line, macd_signal, macd_hist] = ta.macd(close, 12, 26, 9)
 macd_norm = clamp_value(safe_div(macd_hist, sigma_used, 0.0), -1.0, 1.0)
 macd_cross_up = ta.crossover(macd_line, macd_signal)
@@ -220,11 +213,8 @@ barcolor(show_bg ? state_bar : na, title="State Bars")
 
 ma_short_plot = plot(show_ma_bundle ? ma_short : na, "MA short", color=color.new(color.aqua, 0), linewidth=2)
 ma_mid_plot = plot(show_ma_bundle ? ma_mid : na, "MA mid", color=color.new(color.yellow, 0), linewidth=2)
-ma_long_plot = plot(show_ma_bundle ? ma_long : na, "MA long", color=color.new(color.fuchsia, 0), linewidth=3)
-atr21_upper_plot = plot(show_ma_bundle and show_atr21_band ? atr21_upper : na, "ATR21 upper", color=color.new(ATR21_ratio > 1.0 ? color.orange : color.blue, 65), linewidth=1)
-atr21_lower_plot = plot(show_ma_bundle and show_atr21_band ? atr21_lower : na, "ATR21 lower", color=color.new(ATR21_ratio > 1.0 ? color.orange : color.blue, 65), linewidth=1)
+plot(show_ma_bundle ? ma_long : na, "MA long", color=color.new(color.fuchsia, 0), linewidth=3)
 fill(ma_short_plot, ma_mid_plot, color=ma_short >= ma_mid ? color.new(color.lime, 88) : color.new(color.red, 88), title="MA momentum cloud")
-fill(atr21_upper_plot, atr21_lower_plot, color=color.new(ATR21_ratio > 1.0 ? color.orange : color.aqua, 92), title="ATR21 envelope")
 
 visual_lookback = math.max(trend_lookback * 3, 50)
 visual_anchor = ta.lowest(low, visual_lookback) - atr_safe * 1.10
@@ -263,11 +253,11 @@ plotshape(show_labels and show_macd_signals and macd_cross_down, title="MACD bea
 // table
 //-----------------------------------------------------------------------------
 
-var table summary_table = table.new(position.top_right, 2, 24, border_width=1)
+var table summary_table = table.new(position.top_right, 2, 22, border_width=1)
 
 if barstate.islast
     if show_table
-        table.clear(summary_table, 0, 0, 1, 23)
+        table.clear(summary_table, 0, 0, 1, 21)
         table.cell(summary_table, 0, 0, "Metric", text_color=color.white, bgcolor=color.new(color.black, 0))
         table.cell(summary_table, 1, 0, "Value", text_color=color.white, bgcolor=color.new(color.black, 0))
         table.cell(summary_table, 0, 1, "sigma_used")
@@ -304,20 +294,16 @@ if barstate.islast
         table.cell(summary_table, 1, 16, str.tostring(RS_score, "#.###"))
         table.cell(summary_table, 0, 17, "Q_ratio")
         table.cell(summary_table, 1, 17, str.tostring(Q_ratio, "#.###") + " (" + Q_state + ")", text_color=Q_ratio > q_hard ? color.red : Q_ratio > q_soft ? color.orange : color.white)
-        table.cell(summary_table, 0, 18, "ATR21")
-        table.cell(summary_table, 1, 18, str.tostring(ATR21, format.mintick), text_color=ATR21_ratio > 1.0 ? color.orange : color.aqua)
-        table.cell(summary_table, 0, 19, "ATR21%")
-        table.cell(summary_table, 1, 19, str.tostring(ATR21_pct, "#.##") + "%", text_color=ATR21_ratio > 1.0 ? color.orange : color.white)
-        table.cell(summary_table, 0, 20, "MA stack")
-        table.cell(summary_table, 1, 20, MAStackLabel, text_color=ma_bull ? color.lime : ma_bear ? color.red : color.orange)
-        table.cell(summary_table, 0, 21, "MA short/mid/long")
-        table.cell(summary_table, 1, 21, str.tostring(ma_short, format.mintick) + " / " + str.tostring(ma_mid, format.mintick) + " / " + str.tostring(ma_long, format.mintick))
-        table.cell(summary_table, 0, 22, "MACD")
-        table.cell(summary_table, 1, 22, MACDLabel, text_color=macd_bull ? color.lime : macd_bear ? color.red : color.orange)
-        table.cell(summary_table, 0, 23, "MACD hist")
-        table.cell(summary_table, 1, 23, str.tostring(macd_hist, format.mintick), text_color=macd_hist >= 0.0 ? color.lime : color.red)
+        table.cell(summary_table, 0, 18, "MA stack")
+        table.cell(summary_table, 1, 18, MAStackLabel, text_color=ma_bull ? color.lime : ma_bear ? color.red : color.orange)
+        table.cell(summary_table, 0, 19, "MA short/mid/long")
+        table.cell(summary_table, 1, 19, str.tostring(ma_short, format.mintick) + " / " + str.tostring(ma_mid, format.mintick) + " / " + str.tostring(ma_long, format.mintick))
+        table.cell(summary_table, 0, 20, "MACD")
+        table.cell(summary_table, 1, 20, MACDLabel, text_color=macd_bull ? color.lime : macd_bear ? color.red : color.orange)
+        table.cell(summary_table, 0, 21, "MACD hist")
+        table.cell(summary_table, 1, 21, str.tostring(macd_hist, format.mintick), text_color=macd_hist >= 0.0 ? color.lime : color.red)
     else
-        table.clear(summary_table, 0, 0, 1, 23)
+        table.clear(summary_table, 0, 0, 1, 21)
 
 //-----------------------------------------------------------------------------
 // alerts

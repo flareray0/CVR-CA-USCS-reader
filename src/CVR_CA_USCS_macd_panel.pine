@@ -1,0 +1,96 @@
+//@version=5
+indicator("CVR-CA MACD pane", overlay=false, max_labels_count=100)
+
+//-----------------------------------------------------------------------------
+// helpers
+//-----------------------------------------------------------------------------
+
+safe_div(numerator, denominator, fallback) =>
+    not na(numerator) and not na(denominator) and denominator != 0.0 ? numerator / denominator : fallback
+
+//-----------------------------------------------------------------------------
+// inputs
+//-----------------------------------------------------------------------------
+
+group_inputs = "inputs"
+fast_length = input.int(12, "fast length", minval=1, group=group_inputs)
+slow_length = input.int(26, "slow length", minval=2, group=group_inputs)
+signal_length = input.int(9, "signal length", minval=1, group=group_inputs)
+ma_short_length = input.int(20, "ma short length", minval=2, group=group_inputs)
+ma_mid_length = input.int(50, "ma mid length", minval=3, group=group_inputs)
+ma_long_length = input.int(200, "ma long length", minval=5, group=group_inputs)
+show_table = input.bool(true, "show_table", group=group_inputs)
+show_bg = input.bool(true, "show_bg", group=group_inputs)
+show_labels = input.bool(true, "show_labels", group=group_inputs)
+
+//-----------------------------------------------------------------------------
+// macd
+//-----------------------------------------------------------------------------
+
+[macd_line, macd_signal, macd_hist] = ta.macd(close, fast_length, slow_length, signal_length)
+hist_rising = macd_hist >= nz(macd_hist[1], macd_hist)
+macd_cross_up = ta.crossover(macd_line, macd_signal)
+macd_cross_down = ta.crossunder(macd_line, macd_signal)
+macd_bull = macd_line > macd_signal and macd_hist >= 0.0
+macd_bear = macd_line < macd_signal and macd_hist <= 0.0
+MACDLabel = macd_bull ? "Bullish" : macd_bear ? "Bearish" : "Transition"
+MomentumLabel = macd_hist >= 0.0 and hist_rising ? "Strengthening" : macd_hist >= 0.0 ? "Fading" : hist_rising ? "Recovering" : "Weakening"
+
+//-----------------------------------------------------------------------------
+// overlay context
+//-----------------------------------------------------------------------------
+
+ma_short = ta.ema(close, ma_short_length)
+ma_mid = ta.ema(close, ma_mid_length)
+ma_long = ta.ema(close, ma_long_length)
+ma_bull = ma_short > ma_mid and ma_mid > ma_long
+ma_bear = ma_short < ma_mid and ma_mid < ma_long
+MAStackLabel = ma_bull ? "Bullish" : ma_bear ? "Bearish" : "Mixed"
+
+//-----------------------------------------------------------------------------
+// plots
+//-----------------------------------------------------------------------------
+
+state_bg = macd_bull and ma_bull ? color.new(color.lime, 88) : macd_bear and ma_bear ? color.new(color.red, 88) : color.new(color.gray, 91)
+bgcolor(show_bg ? state_bg : na, title="MACD Background")
+hline(0.0, "Zero", color=color.new(color.gray, 55))
+
+plot(macd_hist, "MACD hist", style=plot.style_columns, color=macd_hist >= 0.0 ? hist_rising ? color.new(color.lime, 0) : color.new(color.green, 35) : hist_rising ? color.new(color.orange, 20) : color.new(color.red, 0), linewidth=3)
+plot(macd_line, "MACD line", color=color.new(color.aqua, 0), linewidth=2)
+plot(macd_signal, "Signal line", color=color.new(color.yellow, 0), linewidth=2)
+
+plotshape(show_labels and macd_cross_up, title="MACD bullish cross", style=shape.arrowup, location=location.bottom, color=color.new(color.aqua, 0), size=size.tiny, text="X+")
+plotshape(show_labels and macd_cross_down, title="MACD bearish cross", style=shape.arrowdown, location=location.top, color=color.new(color.red, 0), size=size.tiny, text="X-")
+
+//-----------------------------------------------------------------------------
+// table
+//-----------------------------------------------------------------------------
+
+var table macd_table = table.new(position.top_right, 2, 6, border_width=1)
+
+if barstate.islast
+    if show_table
+        table.clear(macd_table, 0, 0, 1, 5)
+        table.cell(macd_table, 0, 0, "MACD Pane", text_color=color.white, bgcolor=color.new(color.black, 0))
+        table.cell(macd_table, 1, 0, "Value", text_color=color.white, bgcolor=color.new(color.black, 0))
+        table.cell(macd_table, 0, 1, "MACD")
+        table.cell(macd_table, 1, 1, MACDLabel, text_color=macd_bull ? color.lime : macd_bear ? color.red : color.orange)
+        table.cell(macd_table, 0, 2, "Momentum")
+        table.cell(macd_table, 1, 2, MomentumLabel, text_color=hist_rising ? color.lime : color.orange)
+        table.cell(macd_table, 0, 3, "MACD / Signal")
+        table.cell(macd_table, 1, 3, str.tostring(macd_line, format.mintick) + " / " + str.tostring(macd_signal, format.mintick))
+        table.cell(macd_table, 0, 4, "Hist")
+        table.cell(macd_table, 1, 4, str.tostring(macd_hist, format.mintick), text_color=macd_hist >= 0.0 ? color.lime : color.red)
+        table.cell(macd_table, 0, 5, "MA stack")
+        table.cell(macd_table, 1, 5, MAStackLabel, text_color=ma_bull ? color.lime : ma_bear ? color.red : color.orange)
+    else
+        table.clear(macd_table, 0, 0, 1, 5)
+
+//-----------------------------------------------------------------------------
+// alerts
+//-----------------------------------------------------------------------------
+
+alertcondition(macd_cross_up, "MACD bullish cross", "MACD crossed above the signal line")
+alertcondition(macd_cross_down, "MACD bearish cross", "MACD crossed below the signal line")
+alertcondition(ta.crossover(macd_hist, 0.0), "MACD hist crosses above 0", "MACD histogram crossed above 0")
+alertcondition(ta.crossunder(macd_hist, 0.0), "MACD hist crosses below 0", "MACD histogram crossed below 0")

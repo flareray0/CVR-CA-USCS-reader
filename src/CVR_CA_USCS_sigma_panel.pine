@@ -1,0 +1,115 @@
+//@version=5
+indicator("CVR-CA custom sigma pane", overlay=false, max_labels_count=100)
+
+//-----------------------------------------------------------------------------
+// helpers
+//-----------------------------------------------------------------------------
+
+safe_div(numerator, denominator, fallback) =>
+    not na(numerator) and not na(denominator) and denominator != 0.0 ? numerator / denominator : fallback
+
+//-----------------------------------------------------------------------------
+// inputs
+//-----------------------------------------------------------------------------
+
+group_inputs = "inputs"
+sigma_length = input.int(21, "sigma length", minval=5, group=group_inputs)
+use_custom_sigma = input.bool(true, "use_custom_sigma", group=group_inputs)
+sigma_alpha = input.float(0.20, "sigma_alpha", minval=0.01, maxval=1.0, step=0.01, group=group_inputs)
+sigma_w_ewtr = input.float(0.60, "sigma_w_ewtr", minval=0.0, maxval=1.0, step=0.05, group=group_inputs)
+sigma_w_realized = input.float(0.40, "sigma_w_realized", minval=0.0, maxval=1.0, step=0.05, group=group_inputs)
+fee_rate = input.float(0.0010, "fee_rate", minval=0.0, step=0.0001, group=group_inputs)
+slippage_rate = input.float(0.0005, "slippage_rate", minval=0.0, step=0.0001, group=group_inputs)
+spread_proxy_bps = input.float(6.0, "spread_proxy_bps", minval=0.0, step=0.1, group=group_inputs)
+q_soft = input.float(0.20, "q_soft", minval=0.0, step=0.01, group=group_inputs)
+q_hard = input.float(0.35, "q_hard", minval=0.0, step=0.01, group=group_inputs)
+show_table = input.bool(true, "show_table", group=group_inputs)
+show_bg = input.bool(true, "show_bg", group=group_inputs)
+show_labels = input.bool(true, "show_labels", group=group_inputs)
+
+//-----------------------------------------------------------------------------
+// sigma engine
+//-----------------------------------------------------------------------------
+
+TR = ta.tr(true)
+ATR_raw = ta.atr(sigma_length)
+ewtr_alpha = 2.0 / (sigma_alpha * sigma_length + 1.0)
+var float EWTR = na
+EWTR := na(EWTR[1]) ? TR : EWTR[1] + ewtr_alpha * (TR - EWTR[1])
+log_return = math.log(safe_div(close, close[1], 1.0))
+realized_vol_scaled = ta.stdev(log_return, sigma_length) * close
+sigma_eff = sigma_w_ewtr * EWTR + sigma_w_realized * realized_vol_scaled
+atr_safe = math.max(nz(ATR_raw, syminfo.mintick), syminfo.mintick)
+sigma_floor = math.max(syminfo.mintick, atr_safe * 0.0001)
+sigma_used = math.max(use_custom_sigma ? sigma_eff : ATR_raw, sigma_floor)
+sigma_baseline = math.max(ta.ema(sigma_used, sigma_length), sigma_floor)
+SigmaRatio = safe_div(sigma_used, sigma_baseline, 1.0)
+SigmaSlope = sigma_used - nz(sigma_used[1], sigma_used)
+sigma_expanding = SigmaRatio > 1.0 and SigmaSlope > 0.0
+sigma_compressing = SigmaRatio < 1.0 and SigmaSlope < 0.0
+SigmaState = sigma_expanding ? "Expanding" : sigma_compressing ? "Compressing" : "Balanced"
+
+//-----------------------------------------------------------------------------
+// cost proxy
+//-----------------------------------------------------------------------------
+
+fee_roundtrip = close * fee_rate * 2.0
+spread_proxy = close * spread_proxy_bps / 10000.0
+slippage_proxy = close * slippage_rate * 2.0
+Cost_proxy = fee_roundtrip + spread_proxy + slippage_proxy
+Q_ratio = safe_div(spread_proxy, math.max(atr_safe, sigma_floor), 0.0)
+Q_state = Q_ratio > q_hard ? "HARD" : Q_ratio > q_soft ? "SOFT" : "OK"
+
+//-----------------------------------------------------------------------------
+// plots
+//-----------------------------------------------------------------------------
+
+state_bg = sigma_expanding ? color.new(color.orange, 88) : sigma_compressing ? color.new(color.aqua, 89) : color.new(color.gray, 90)
+bgcolor(show_bg ? state_bg : na, title="Sigma Background")
+
+plot(sigma_used, "sigma_used", color=sigma_expanding ? color.new(color.orange, 0) : sigma_compressing ? color.new(color.aqua, 0) : color.new(color.yellow, 0), linewidth=3)
+plot(ATR_raw, "ATR_raw", color=color.new(color.white, 20), linewidth=2)
+plot(sigma_eff, "sigma_eff", color=color.new(color.fuchsia, 0), linewidth=2)
+plot(sigma_baseline, "sigma baseline", color=color.new(color.gray, 50), linewidth=1)
+plot(Cost_proxy, "Cost_proxy", color=color.new(color.red, 0), linewidth=2)
+
+plotshape(show_labels and ta.crossover(SigmaRatio, 1.0), title="SigmaRatio crosses above 1", style=shape.triangleup, location=location.bottom, color=color.new(color.orange, 0), size=size.tiny, text="EXP")
+plotshape(show_labels and ta.crossunder(SigmaRatio, 1.0), title="SigmaRatio crosses below 1", style=shape.triangledown, location=location.top, color=color.new(color.aqua, 0), size=size.tiny, text="CMP")
+plotshape(show_labels and Q_ratio > q_hard, title="Q hard risk", style=shape.square, location=location.top, color=color.new(color.red, 0), size=size.tiny, text="Q!")
+
+//-----------------------------------------------------------------------------
+// table
+//-----------------------------------------------------------------------------
+
+var table sigma_table = table.new(position.top_right, 2, 8, border_width=1)
+
+if barstate.islast
+    if show_table
+        table.clear(sigma_table, 0, 0, 1, 7)
+        table.cell(sigma_table, 0, 0, "Sigma Pane", text_color=color.white, bgcolor=color.new(color.black, 0))
+        table.cell(sigma_table, 1, 0, "Value", text_color=color.white, bgcolor=color.new(color.black, 0))
+        table.cell(sigma_table, 0, 1, "sigma_used")
+        table.cell(sigma_table, 1, 1, str.tostring(sigma_used, format.mintick), text_color=sigma_expanding ? color.orange : sigma_compressing ? color.aqua : color.white)
+        table.cell(sigma_table, 0, 2, "ATR_raw")
+        table.cell(sigma_table, 1, 2, str.tostring(ATR_raw, format.mintick))
+        table.cell(sigma_table, 0, 3, "sigma_eff")
+        table.cell(sigma_table, 1, 3, str.tostring(sigma_eff, format.mintick))
+        table.cell(sigma_table, 0, 4, "SigmaRatio")
+        table.cell(sigma_table, 1, 4, str.tostring(SigmaRatio, "#.###"))
+        table.cell(sigma_table, 0, 5, "SigmaSlope")
+        table.cell(sigma_table, 1, 5, str.tostring(SigmaSlope, format.mintick))
+        table.cell(sigma_table, 0, 6, "Cost / Q")
+        table.cell(sigma_table, 1, 6, str.tostring(Cost_proxy, format.mintick) + " / " + str.tostring(Q_ratio, "#.###"))
+        table.cell(sigma_table, 0, 7, "State")
+        table.cell(sigma_table, 1, 7, SigmaState + " / " + Q_state, text_color=sigma_expanding ? color.orange : sigma_compressing ? color.aqua : Q_ratio > q_soft ? color.orange : color.white)
+    else
+        table.clear(sigma_table, 0, 0, 1, 7)
+
+//-----------------------------------------------------------------------------
+// alerts
+//-----------------------------------------------------------------------------
+
+alertcondition(ta.crossover(SigmaRatio, 1.0), "SigmaRatio crosses above 1", "SigmaRatio crossed above 1")
+alertcondition(ta.crossunder(SigmaRatio, 1.0), "SigmaRatio crosses below 1", "SigmaRatio crossed below 1")
+alertcondition(Q_ratio > q_soft, "Q_ratio > q_soft", "Q_ratio is above q_soft")
+alertcondition(Q_ratio > q_hard, "Q_ratio > q_hard", "Q_ratio is above q_hard")
