@@ -37,6 +37,13 @@ radar_color_from_state(label_text) =>
      label_text == "MONITOR" ? color.new(color.orange, 0) :
      color.new(color.red, 0)
 
+market_phase_color_from_label(label_text) =>
+    label_text == "CONFIRMED_UP" ? color.new(color.lime, 0) :
+     label_text == "EARLY_UP" ? color.new(color.aqua, 0) :
+     label_text == "BASE_BUILDING" ? color.new(color.teal, 0) :
+     label_text == "BEARISH_REBOUND" ? color.new(color.orange, 0) :
+     color.new(color.red, 0)
+
 //-----------------------------------------------------------------------------
 // inputs
 //-----------------------------------------------------------------------------
@@ -70,9 +77,15 @@ q_soft = input.float(0.20, "q_soft", minval=0.0, step=0.01, group=group_inputs)
 q_hard = input.float(0.35, "q_hard", minval=0.0, step=0.01, group=group_inputs)
 trend_lookback = input.int(21, "trend lookback", minval=5, group=group_inputs)
 reversal_lookback = input.int(12, "reversal lookback", minval=2, group=group_inputs)
+trend_up_enter_threshold = input.float(0.35, "trend_up_enter_threshold", step=0.01, group=group_inputs)
+trend_up_exit_threshold = input.float(0.15, "trend_up_exit_threshold", step=0.01, group=group_inputs)
+trend_down_enter_threshold = input.float(-0.35, "trend_down_enter_threshold", step=0.01, group=group_inputs)
+trend_down_exit_threshold = input.float(-0.15, "trend_down_exit_threshold", step=0.01, group=group_inputs)
+trend_confirm_bars = input.int(3, "trend_confirm_bars", minval=1, group=group_inputs)
 show_table = input.bool(true, "show_table", group=group_inputs)
 show_bg = input.bool(true, "show_bg", group=group_inputs)
 show_labels = input.bool(true, "show_labels", group=group_inputs)
+show_dashboard_lanes = input.bool(true, "show_dashboard_lanes", group=group_inputs)
 show_ma_bundle = input.bool(true, "show_ma_bundle", group=group_inputs)
 ma_short_length = input.int(20, "ma short length", minval=2, group=group_inputs)
 ma_mid_length = input.int(50, "ma mid length", minval=3, group=group_inputs)
@@ -185,6 +198,18 @@ prevTrendLabel = bar_index > 0 ? TrendLabel[1] : TrendLabel
 trend_changed = TrendLabel != prevTrendLabel
 trend_up = TrendLabel == "UP"
 trend_down = TrendLabel == "DOWN"
+bull_structure = close > ema_4h and ema_4h > ema_1d and ema_slope_4h > 0.0 and ema_slope_1d > 0.0
+bear_structure = close < ema_4h and ema_4h < ema_1d and ema_slope_4h < 0.0 and ema_slope_1d < 0.0
+
+var string TrendState = "NEUTRAL"
+prevTrendState = TrendState
+if TrendState == "NEUTRAL"
+    TrendState := TrendScore >= trend_up_enter_threshold ? "UP" : TrendScore <= trend_down_enter_threshold ? "DOWN" : "NEUTRAL"
+else if TrendState == "UP"
+    TrendState := TrendScore < trend_up_exit_threshold ? "NEUTRAL" : "UP"
+else
+    TrendState := TrendScore > trend_down_exit_threshold ? "NEUTRAL" : "DOWN"
+TrendStateChanged = TrendState != prevTrendState
 
 //-----------------------------------------------------------------------------
 // reversal precursor
@@ -201,6 +226,33 @@ short_slope_slowing = clamp_value(safe_div(nz(short_slope[reversal_lookback], sh
 heat_worsening = clamp_value(safe_div(uscs_heat - uscs_heat_ref, math.max(uscs_heat_ref, 0.01), 0.0), 0.0, 1.0)
 ReversalScore = clamp_value(m_eff_worsening * 0.30 + rs_worsening * 0.20 + q_worsening * 0.20 + short_slope_slowing * 0.15 + heat_worsening * 0.15, 0.0, 1.20)
 ReversalLabel = ReversalScore >= 0.85 ? "FlipCandidate" : ReversalScore >= 0.60 ? "Warning" : ReversalScore >= 0.35 ? "Fatigue" : "Stable"
+
+confirmed_up_condition = TrendState == "UP" and bull_structure and m_eff > 0.0 and Q_state == "OK"
+var int confirmed_up_bars = 0
+confirmed_up_bars := confirmed_up_condition ? confirmed_up_bars + 1 : 0
+
+confirmed_up_ready = confirmed_up_bars >= trend_confirm_bars and ReversalLabel != "Warning" and ReversalLabel != "FlipCandidate"
+down_continuation = TrendState == "DOWN" and bear_structure and (ReversalLabel == "Stable" or ReversalLabel == "Fatigue")
+bearish_rebound = TrendState == "DOWN" and not bear_structure and short_slope > 0.0 and m_eff > 0.0
+base_building = TrendState == "NEUTRAL" and m_eff > 0.0 and Q_state != "HARD"
+early_up = TrendState == "UP" and bull_structure and confirmed_up_bars < trend_confirm_bars
+confirmed_up_phase = TrendState == "UP" and bull_structure and confirmed_up_ready and Q_state == "OK" and m_eff > 0.0
+
+MarketPhaseLabel = confirmed_up_phase ? "CONFIRMED_UP" :
+ early_up ? "EARLY_UP" :
+ down_continuation ? "DOWN_CONTINUATION" :
+ bearish_rebound ? "BEARISH_REBOUND" :
+ base_building ? "BASE_BUILDING" :
+ TrendState == "UP" and bull_structure ? "EARLY_UP" :
+ TrendState == "DOWN" and bear_structure ? "DOWN_CONTINUATION" :
+ TrendState == "DOWN" ? "BEARISH_REBOUND" : "BASE_BUILDING"
+
+trend_quality = TrendState == "UP" ? 1.0 : TrendState == "NEUTRAL" ? 0.45 : 0.10
+structure_quality = bull_structure ? 1.0 : close > ema_4h ? 0.60 : 0.20
+margin_quality = clamp_value(safe_div(m_eff, math.max(L_eff, syminfo.mintick), 0.0), 0.0, 1.0)
+reversal_penalty = ReversalLabel == "Stable" ? 0.00 : ReversalLabel == "Fatigue" ? 0.15 : ReversalLabel == "Warning" ? 0.35 : 0.60
+q_penalty = Q_state == "OK" ? 0.00 : Q_state == "SOFT" ? 0.20 : 0.50
+RiseQualityScore = clamp_value(trend_quality * 0.30 + structure_quality * 0.25 + margin_quality * 0.25 + (confirmed_up_bars >= trend_confirm_bars ? 0.20 : 0.05) - reversal_penalty - q_penalty, 0.0, 1.0)
 
 //-----------------------------------------------------------------------------
 // plots
@@ -253,31 +305,31 @@ pressure_lane = visual_anchor + visual_step * 3.4
 trend_lane = visual_anchor + visual_step * 2.1
 reversal_lane = visual_anchor + visual_step * 0.8
 
-plot(m_lane, "m_eff baseline", color=color.new(color.silver, 75), linewidth=1, style=plot.style_linebr)
-plot(sigma_lane, "SigmaRatio baseline", color=color.new(color.silver, 75), linewidth=1, style=plot.style_linebr)
-plot(pressure_lane, "Pressure baseline", color=color.new(color.silver, 75), linewidth=1, style=plot.style_linebr)
-plot(trend_lane, "TrendScore baseline", color=color.new(color.silver, 75), linewidth=1, style=plot.style_linebr)
-plot(reversal_lane, "ReversalScore baseline", color=color.new(color.silver, 75), linewidth=1, style=plot.style_linebr)
-plot(pressure_lane + visual_step, "Pressure hard guide", color=color.new(color.red, 85), linewidth=1, style=plot.style_linebr)
-plot(reversal_lane + visual_step * 0.60, "Reversal warning guide", color=color.new(color.orange, 85), linewidth=1, style=plot.style_linebr)
+plot(show_dashboard_lanes ? m_lane : na, "m_eff baseline", color=color.new(color.silver, 75), linewidth=1, style=plot.style_linebr)
+plot(show_dashboard_lanes ? sigma_lane : na, "SigmaRatio baseline", color=color.new(color.silver, 75), linewidth=1, style=plot.style_linebr)
+plot(show_dashboard_lanes ? pressure_lane : na, "Pressure baseline", color=color.new(color.silver, 75), linewidth=1, style=plot.style_linebr)
+plot(show_dashboard_lanes ? trend_lane : na, "TrendScore baseline", color=color.new(color.silver, 75), linewidth=1, style=plot.style_linebr)
+plot(show_dashboard_lanes ? reversal_lane : na, "ReversalScore baseline", color=color.new(color.silver, 75), linewidth=1, style=plot.style_linebr)
+plot(show_dashboard_lanes ? pressure_lane + visual_step : na, "Pressure hard guide", color=color.new(color.red, 85), linewidth=1, style=plot.style_linebr)
+plot(show_dashboard_lanes ? reversal_lane + visual_step * 0.60 : na, "Reversal warning guide", color=color.new(color.orange, 85), linewidth=1, style=plot.style_linebr)
 
-plot(m_lane + clamp_value(m, -2.0, 2.5) * visual_step, "m static", color=color.new(color.silver, 20), linewidth=1)
-plot(m_lane + clamp_value(m_eff, -2.0, 2.5) * visual_step, "m_eff", color=m_eff >= 0.0 ? color.new(color.lime, 0) : color.new(color.red, 0), linewidth=3)
-plot(sigma_lane + atr_norm * visual_step, "ATR ratio", color=color.new(color.white, 25), linewidth=1)
-plot(sigma_lane + sigma_eff_norm * visual_step, "sigma_eff ratio", color=color.new(color.fuchsia, 15), linewidth=2)
-plot(sigma_lane + sigma_used_norm * visual_step, "SigmaRatio", color=sigma_expanding ? color.new(color.orange, 0) : sigma_compressing ? color.new(color.aqua, 0) : color.new(color.blue, 0), linewidth=3)
-plot(pressure_lane + heat_pressure_norm * visual_step, "Heat pressure", color=color.new(color.yellow, 10), linewidth=1)
-plot(pressure_lane + q_pressure_norm * visual_step, "Q pressure", color=Q_ratio > q_hard ? color.new(color.red, 0) : Q_ratio > q_soft ? color.new(color.orange, 0) : color.new(color.aqua, 0), linewidth=2)
-plot(pressure_lane + pressure_norm * visual_step, "CostKillRisk", color=cost_pressure_high ? color.new(color.red, 0) : color.new(color.orange, 0), linewidth=3)
-plot(trend_lane + RS_score * visual_step, "RS_score", color=color.new(color.aqua, 25), linewidth=1)
-plot(trend_lane + TrendScore * visual_step, "TrendScore", color=state_color_from_label(TrendLabel), linewidth=3)
-plot(reversal_lane + heat_worsening * visual_step, "Heat worsening", color=color.new(color.yellow, 20), linewidth=1)
-plot(reversal_lane + ReversalScore * visual_step, "ReversalScore", color=reversal_color_from_label(ReversalLabel), linewidth=3)
+plot(show_dashboard_lanes ? m_lane + clamp_value(m, -2.0, 2.5) * visual_step : na, "m static", color=color.new(color.silver, 20), linewidth=1)
+plot(show_dashboard_lanes ? m_lane + clamp_value(m_eff, -2.0, 2.5) * visual_step : na, "m_eff", color=m_eff >= 0.0 ? color.new(color.lime, 0) : color.new(color.red, 0), linewidth=3)
+plot(show_dashboard_lanes ? sigma_lane + atr_norm * visual_step : na, "ATR ratio", color=color.new(color.white, 25), linewidth=1)
+plot(show_dashboard_lanes ? sigma_lane + sigma_eff_norm * visual_step : na, "sigma_eff ratio", color=color.new(color.fuchsia, 15), linewidth=2)
+plot(show_dashboard_lanes ? sigma_lane + sigma_used_norm * visual_step : na, "SigmaRatio", color=sigma_expanding ? color.new(color.orange, 0) : sigma_compressing ? color.new(color.aqua, 0) : color.new(color.blue, 0), linewidth=3)
+plot(show_dashboard_lanes ? pressure_lane + heat_pressure_norm * visual_step : na, "Heat pressure", color=color.new(color.yellow, 10), linewidth=1)
+plot(show_dashboard_lanes ? pressure_lane + q_pressure_norm * visual_step : na, "Q pressure", color=Q_ratio > q_hard ? color.new(color.red, 0) : Q_ratio > q_soft ? color.new(color.orange, 0) : color.new(color.aqua, 0), linewidth=2)
+plot(show_dashboard_lanes ? pressure_lane + pressure_norm * visual_step : na, "CostKillRisk", color=cost_pressure_high ? color.new(color.red, 0) : color.new(color.orange, 0), linewidth=3)
+plot(show_dashboard_lanes ? trend_lane + RS_score * visual_step : na, "RS_score", color=color.new(color.aqua, 25), linewidth=1)
+plot(show_dashboard_lanes ? trend_lane + TrendScore * visual_step : na, "TrendScore", color=state_color_from_label(TrendLabel), linewidth=3)
+plot(show_dashboard_lanes ? reversal_lane + heat_worsening * visual_step : na, "Heat worsening", color=color.new(color.yellow, 20), linewidth=1)
+plot(show_dashboard_lanes ? reversal_lane + ReversalScore * visual_step : na, "ReversalScore", color=reversal_color_from_label(ReversalLabel), linewidth=3)
 
-plot(m_lane, "m_eff zero guide", color=color.new(color.white, 90), linewidth=1, style=plot.style_circles)
-plot(sigma_lane, "SigmaRatio one guide", color=color.new(color.white, 90), linewidth=1, style=plot.style_circles)
-plot(pressure_lane, "Pressure calm guide", color=color.new(color.white, 90), linewidth=1, style=plot.style_circles)
-plot(trend_lane, "Trend zero guide", color=color.new(color.white, 92), linewidth=1, style=plot.style_circles)
+plot(show_dashboard_lanes ? m_lane : na, "m_eff zero guide", color=color.new(color.white, 90), linewidth=1, style=plot.style_circles)
+plot(show_dashboard_lanes ? sigma_lane : na, "SigmaRatio one guide", color=color.new(color.white, 90), linewidth=1, style=plot.style_circles)
+plot(show_dashboard_lanes ? pressure_lane : na, "Pressure calm guide", color=color.new(color.white, 90), linewidth=1, style=plot.style_circles)
+plot(show_dashboard_lanes ? trend_lane : na, "Trend zero guide", color=color.new(color.white, 92), linewidth=1, style=plot.style_circles)
 
 plotshape(show_labels and trend_changed and trend_up, title="Trend UP", style=shape.arrowup, location=location.belowbar, color=color.new(color.lime, 0), size=size.tiny, text="UP")
 plotshape(show_labels and trend_changed and trend_down, title="Trend DOWN", style=shape.arrowdown, location=location.abovebar, color=color.new(color.red, 0), size=size.tiny, text="DOWN")
@@ -298,7 +350,7 @@ if barstate.islast
     label.delete(pressure_status_label)
     label.delete(trend_status_label)
     label.delete(reversal_status_label)
-    if show_labels
+    if show_labels and show_dashboard_lanes
         margin_status_label := label.new(bar_index, m_lane, "MARGIN " + MarginState + " | " + str.tostring(m_eff, "#.##"), xloc=xloc.bar_index, yloc=yloc.price, style=label.style_label_left, textcolor=color.white, color=color.new(margin_color_from_state(MarginState), 72), size=size.tiny)
         sigma_status_label := label.new(bar_index, sigma_lane, "SIGMA " + SigmaState + " | " + str.tostring(SigmaRatio, "#.##") + "x", xloc=xloc.bar_index, yloc=yloc.price, style=label.style_label_left, textcolor=color.white, color=color.new(sigma_expanding ? color.orange : sigma_compressing ? color.aqua : color.blue, 72), size=size.tiny)
         pressure_status_label := label.new(bar_index, pressure_lane, "PRESS " + PressureState + " | Q " + Q_state, xloc=xloc.bar_index, yloc=yloc.price, style=label.style_label_left, textcolor=color.white, color=color.new(pressure_color_from_state(PressureState), 72), size=size.tiny)
@@ -309,11 +361,11 @@ if barstate.islast
 // table
 //-----------------------------------------------------------------------------
 
-var table summary_table = table.new(position.top_right, 2, 23, border_width=1)
+var table summary_table = table.new(position.top_right, 2, 28, border_width=1)
 
 if barstate.islast
     if show_table
-        table.clear(summary_table, 0, 0, 1, 22)
+        table.clear(summary_table, 0, 0, 1, 27)
         table.cell(summary_table, 0, 0, "Metric", text_color=color.white, bgcolor=color.new(color.black, 0))
         table.cell(summary_table, 1, 0, "Value", text_color=color.white, bgcolor=color.new(color.black, 0))
         table.cell(summary_table, 0, 1, "Radar")
@@ -360,8 +412,18 @@ if barstate.islast
         table.cell(summary_table, 1, 21, MACDLabel, text_color=macd_bull ? color.lime : macd_bear ? color.red : color.orange)
         table.cell(summary_table, 0, 22, "MACD hist")
         table.cell(summary_table, 1, 22, str.tostring(macd_hist, format.mintick), text_color=macd_hist >= 0.0 ? color.lime : color.red)
+        table.cell(summary_table, 0, 23, "TrendState")
+        table.cell(summary_table, 1, 23, TrendState, text_color=state_color_from_label(TrendState))
+        table.cell(summary_table, 0, 24, "MarketPhase")
+        table.cell(summary_table, 1, 24, MarketPhaseLabel, text_color=market_phase_color_from_label(MarketPhaseLabel))
+        table.cell(summary_table, 0, 25, "RiseQuality")
+        table.cell(summary_table, 1, 25, str.tostring(RiseQualityScore, "#.###"), text_color=RiseQualityScore >= 0.70 ? color.lime : RiseQualityScore >= 0.50 ? color.orange : color.red)
+        table.cell(summary_table, 0, 26, "bull_structure")
+        table.cell(summary_table, 1, 26, bull_structure ? "true" : "false", text_color=bull_structure ? color.lime : color.orange)
+        table.cell(summary_table, 0, 27, "confirmed_up_bars")
+        table.cell(summary_table, 1, 27, str.tostring(confirmed_up_bars))
     else
-        table.clear(summary_table, 0, 0, 1, 22)
+        table.clear(summary_table, 0, 0, 1, 27)
 
 //-----------------------------------------------------------------------------
 // alerts
@@ -372,10 +434,18 @@ reversal_warning_enter = ReversalLabel == "Warning" and prevReversalLabel != "Wa
 reversal_flip_enter = ReversalLabel == "FlipCandidate" and prevReversalLabel != "FlipCandidate"
 trend_up_warning = TrendLabel == "UP" and ReversalLabel == "Warning"
 trend_down_warning = TrendLabel == "DOWN" and ReversalLabel == "Warning"
+prevMarketPhaseLabel = bar_index > 0 ? MarketPhaseLabel[1] : MarketPhaseLabel
+market_phase_bearish_rebound_enter = MarketPhaseLabel == "BEARISH_REBOUND" and prevMarketPhaseLabel != "BEARISH_REBOUND"
+market_phase_confirmed_up_enter = MarketPhaseLabel == "CONFIRMED_UP" and prevMarketPhaseLabel != "CONFIRMED_UP"
 
 alertcondition(trend_changed, "TrendLabel changes", "TrendLabel changed")
+alertcondition(TrendStateChanged, "TrendState changes", "TrendState changed")
 alertcondition(reversal_warning_enter, "ReversalLabel enters Warning", "ReversalLabel entered Warning")
 alertcondition(reversal_flip_enter, "ReversalLabel enters FlipCandidate", "ReversalLabel entered FlipCandidate")
+alertcondition(market_phase_bearish_rebound_enter, "MarketPhase enters BEARISH_REBOUND", "MarketPhaseLabel entered BEARISH_REBOUND")
+alertcondition(market_phase_confirmed_up_enter, "MarketPhase enters CONFIRMED_UP", "MarketPhaseLabel entered CONFIRMED_UP")
+alertcondition(ta.crossover(RiseQualityScore, 0.70), "RiseQualityScore crosses above 0.70", "RiseQualityScore crossed above 0.70")
+alertcondition(ta.crossunder(RiseQualityScore, 0.50), "RiseQualityScore crosses below 0.50", "RiseQualityScore crossed below 0.50")
 alertcondition(ta.crossunder(m_eff, 0.0), "m_eff crosses below 0", "m_eff crossed below 0")
 alertcondition(ta.crossover(m_eff, 0.0), "m_eff crosses above 0", "m_eff crossed above 0")
 alertcondition(ta.crossunder(SigmaRatio, 1.0), "SigmaRatio crosses below 1", "SigmaRatio crossed below 1")
