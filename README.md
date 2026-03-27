@@ -26,7 +26,10 @@ TradingView Pine Script v5 indicator project for reading CVR-CA × USCS market s
 - `L_base` and `L_eff` to compare the static structural allowance against dynamic regime and USCS gains
 - `m` and `m_eff` to show margin reserve before and after dynamic adjustments
 - `TrendScore` and `TrendLabel` to summarize directional pressure
+- `TrendState` to add hysteresis-based trend transitions (separate from legacy `TrendLabel`)
 - `ReversalScore` and `ReversalLabel` to surface fatigue, warning, and flip precursor states
+- `MarketPhaseLabel` to separate `DOWN_CONTINUATION`, `BEARISH_REBOUND`, `BASE_BUILDING`, `EARLY_UP`, and `CONFIRMED_UP`
+- `RiseQualityScore` (0.0-1.0) to summarize how close the market is to stable trend continuation
 - `Q_ratio` to monitor spread pressure against raw ATR
 - short / mid / long MAs to read stack alignment at a glance
 - embedded sigma radar to read `sigma_used`, `ATR_raw`, `sigma_eff`, and friction pressure in one place
@@ -35,6 +38,8 @@ TradingView Pine Script v5 indicator project for reading CVR-CA × USCS market s
 ## Reader, Not Bot Replica
 
 This project is intentionally a reader and observer. It does not attempt to reproduce a live trading bot or execution stack. The CVR core is kept intact, while dynamic components are approximated into TradingView-friendly market-state signals.
+
+Recent additions are aimed at separating stable rise versus bearish rebound behavior while staying additive and backward-compatible with existing reader outputs.
 
 ## Pine Constraints
 
